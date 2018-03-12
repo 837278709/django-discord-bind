@@ -41,7 +41,7 @@ class DiscordBindConf(AppConf):
     CLIENT_SECRET = None
 
     # OAuth2 scope
-    EMAIL_SCOPE = True
+    AUTH_SCOPE = ['email', 'identify', 'guilds.join']
 
     # URI settings
     REDIRECT_URI = None

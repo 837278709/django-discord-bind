@@ -32,11 +32,11 @@ try:
     from django.urls import reverse
 except ImportError:
     from django.core.urlresolvers import reverse
-from django.contrib.auth.decorators import login_required
 from django.utils.timezone import make_aware
 from django.db.models import Q
 from django.contrib import messages
-
+from django.contrib.auth.models import User
+from django.contrib.auth import login
 import requests
 from requests_oauthlib import OAuth2Session
 
@@ -61,7 +61,29 @@ def oauth_session(request, scope=None, state=None, token=None):
                          state=state)
 
 
-@login_required
+def log_user_in(request, data):
+    uid = data.pop('uid')
+    discord_user_exist = User.objects.filter(username=uid).exists()
+    if discord_user_exist:
+        user = User.objects.get(username=uid)
+        DiscordUser.objects.filter(uid=uid).update(**data)
+    else:
+        user = User.objects.create_user(uid)
+        DiscordUser.objects.create(uid=uid, user=user, **data)
+    login(request, user)
+
+
+def bind_user(request, data):
+        """ Create or update a DiscordUser instance """
+        uid = data.pop('uid')
+        count = DiscordUser.objects.filter(uid=uid).update(user=request.user,
+                                                           **data)
+        if count == 0:
+            DiscordUser.objects.create(uid=uid,
+                                       user=request.user,
+                                       **data)
+
+
 def index(request):
     # Record the final redirect alternatives
     if 'invite_uri' in request.GET:
@@ -77,9 +99,7 @@ def index(request):
                 settings.DISCORD_RETURN_URI)
 
     # Compute the authorization URI
-    scope = (['email', 'identify',
-              'guilds.join'] if settings.DISCORD_EMAIL_SCOPE
-             else ['identify', 'guilds.join'])
+    scope = settings.DISCORD_AUTH_SCOPE
     oauth = oauth_session(request, scope=scope)
     url, state = oauth.authorization_url(settings.DISCORD_BASE_URI +
                                          settings.DISCORD_AUTHZ_PATH)
@@ -87,7 +107,6 @@ def index(request):
     return HttpResponseRedirect(url)
 
 
-@login_required
 def callback(request):
     def decompose_data(user, token):
         """ Extract the important details """
@@ -96,6 +115,7 @@ def callback(request):
             'username': user['username'],
             'discriminator': user['discriminator'],
             'email': user.get('email', ''),
+            'email_verified': user.get('verified', False),
             'avatar': user.get('avatar', ''),
             'access_token': token['access_token'],
             'refresh_token': token.get('refresh_token', ''),
@@ -113,16 +133,6 @@ def callback(request):
             pass
         return data
 
-    def bind_user(request, data):
-        """ Create or update a DiscordUser instance """
-        uid = data.pop('uid')
-        count = DiscordUser.objects.filter(uid=uid).update(user=request.user,
-                                                           **data)
-        if count == 0:
-            DiscordUser.objects.create(uid=uid,
-                                       user=request.user,
-                                       **data)
-
     response = request.build_absolute_uri()
     state = request.session['discord_bind_oauth_state']
     if 'state' not in request.GET or request.GET['state'] != state:
@@ -136,7 +146,10 @@ def callback(request):
     # Get Discord user data
     user = oauth.get(settings.DISCORD_BASE_URI + '/users/@me').json()
     data = decompose_data(user, token)
-    bind_user(request, data)
+    if request.user.is_authenticated:
+        bind_user(request, data)
+    else:
+        log_user_in(request, data)
 
     # Accept Discord invites
     groups = request.user.groups.all()
@@ -151,17 +164,19 @@ def callback(request):
             headers={'Content-Type': 'application/json',
                      'Authorization': settings.BOT_TOKEN})
 
-        if r.status_code == requests.codes.no_content:
+        if r.status_code == requests.codes.no_content or requests.codes.created:
+            # no_content, if user already invited to the guild: 204
+            # created, successfully get invited: 201
             count += 1
             logger.info(('accepted Discord '
                          'invite for %s/%s') % (invite.guild_name,
                                                 invite.channel_name))
         else:
-            logger.error(('failed to accept Discord '
-                          'invite for %s/%s: %d %s') % (invite.guild_name,
-                                                        invite.channel_name,
-                                                        r.status_code,
-                                                        r.reason))
+            logger.warning(('failed to accept Discord '
+                            'invite for %s/%s: %d %s') % (invite.guild_name,
+                                                          invite.channel_name,
+                                                          r.status_code,
+                                                          r.reason))
 
     # Select return target
     if count > 0:

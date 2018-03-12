@@ -44,6 +44,7 @@ class DiscordUser(models.Model):
     discriminator = models.CharField(max_length=4)
     avatar = models.CharField(max_length=32, blank=True)
     email = models.EmailField(max_length=254, blank=True)
+    email_verified = models.BooleanField(default=False)
     access_token = models.CharField(max_length=32, blank=True)
     refresh_token = models.CharField(max_length=32, blank=True)
     scope = models.CharField(max_length=256, blank=True)

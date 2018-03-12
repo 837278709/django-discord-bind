@@ -42,7 +42,7 @@ class DiscordUserAdmin(admin.ModelAdmin):
         ('Discord Account', {
             'fields': ('uid',
                        ('username', 'discriminator'),
-                       'email', 'avatar'),
+                       'email', 'email_verified', 'avatar'),
         }),
         ('OAuth2', {
             'classes': ('collapse',),
