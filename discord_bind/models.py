@@ -27,7 +27,8 @@ from __future__ import unicode_literals
 
 import requests
 from django.db import models
-from django.contrib.auth.models import User, Group
+from django.contrib.auth.models import Group
+
 from django.utils.encoding import python_2_unicode_compatible
 from discord_bind.conf import settings
 
@@ -38,7 +39,8 @@ logger = logging.getLogger(__name__)
 @python_2_unicode_compatible
 class DiscordUser(models.Model):
     """ Discord User mapping. """
-    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL,
+                             on_delete=models.CASCADE)
     uid = models.CharField(max_length=20, blank=False, unique=True)
     username = models.CharField(max_length=254)
     discriminator = models.CharField(max_length=4)
