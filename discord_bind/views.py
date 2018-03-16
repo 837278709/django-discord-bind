@@ -63,13 +63,21 @@ def oauth_session(request, scope=None, state=None, token=None):
 
 def log_user_in(request, data):
     uid = data.pop('uid')
-    discord_user_exist = User.objects.filter(username=uid).exists()
+    # discord_user_exist = User.objects.filter(username=uid).exists()
+    discord_user_exist = False
     if discord_user_exist:
         user = User.objects.get(username=uid)
         DiscordUser.objects.filter(uid=uid).update(**data)
     else:
-        user = User.objects.create_user(uid)
-        DiscordUser.objects.create(uid=uid, user=user, **data)
+        if not data.get('email_verified'):
+            user = User.objects.create_user(uid)
+            DiscordUser.objects.create(uid=uid, user=user, **data)
+        else:
+            request.session['discord_bind_return_uri'] = reverse(
+                'account:account_verify_email',
+                kwargs={'email': data.get('email')})
+            # settings.EMAIL_VERIFY_URI
+            return
     login(request, user)
 
 
@@ -165,8 +173,8 @@ def callback(request):
                      'Authorization': settings.BOT_TOKEN})
 
         if r.status_code == requests.codes.no_content or requests.codes.created:
-            # no_content, if user already invited to the guild: 204
-            # created, successfully get invited: 201
+            # code=204 no_content, if user already invited to the guild
+            # code=201 created, successfully get invited
             count += 1
             logger.info(('accepted Discord '
                          'invite for %s/%s') % (invite.guild_name,
