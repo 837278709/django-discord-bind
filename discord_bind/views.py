@@ -27,19 +27,26 @@ from __future__ import unicode_literals
 
 from datetime import datetime
 
-from django.http import HttpResponseRedirect, HttpResponseForbidden
-try:
-    from django.urls import reverse
-except ImportError:
-    from django.core.urlresolvers import reverse
+from django.http import HttpResponseRedirect, Http404, HttpResponseForbidden
 from django.utils.timezone import make_aware
 from django.db.models import Q
 from django.contrib import messages
 from django.contrib.auth.models import User
 from django.contrib.auth import login
+from django.views.generic.edit import FormView
+
+from discord_bind.compat import is_authenticated, reverse
+from discord_bind.forms import EmailVerifyForm
 import requests
 from requests_oauthlib import OAuth2Session
 
+from account.models import (
+    Account,
+    AccountDeletion,
+    EmailAddress,
+    EmailConfirmation,
+    PasswordHistory,
+)
 from discord_bind.models import DiscordUser, DiscordInvite
 from discord_bind.conf import settings
 import json
@@ -70,13 +77,18 @@ def log_user_in(request, data):
         DiscordUser.objects.filter(uid=uid).update(**data)
     else:
         if not data.get('email_verified'):
+#         if data.get('email_verified'):
             user = User.objects.create_user(uid)
             DiscordUser.objects.create(uid=uid, user=user, **data)
         else:
-            request.session['discord_bind_return_uri'] = reverse(
-                'account:account_verify_email',
-                kwargs={'email': data.get('email')})
-            # settings.EMAIL_VERIFY_URI
+            user = User.objects.create_user(uid, is_active=False)
+            DiscordUser.objects.create(uid=uid, user=user, **data)
+            redir_uri = reverse(
+                'account_verify_email',
+                )
+            request.session['discord_bind_return_uri'] = redir_uri
+            request.session['unverified_email'] = data.get('email')
+            request.session['uid'] = uid
             return
     login(request, user)
 
@@ -172,7 +184,7 @@ def callback(request):
             headers={'Content-Type': 'application/json',
                      'Authorization': settings.BOT_TOKEN})
 
-        if r.status_code == requests.codes.no_content or requests.codes.created:
+        if r.status_code == 201 or 204:
             # code=204 no_content, if user already invited to the guild
             # code=201 created, successfully get invited
             count += 1
@@ -199,3 +211,58 @@ def callback(request):
     del request.session['discord_bind_return_uri']
 
     return HttpResponseRedirect(url)
+
+
+class EmailVerifyView(FormView):
+
+    template_name = "account/email_verify.html"
+    template_name_email_sent = "account/email_confirmation_sent.html"
+    form_class = EmailVerifyForm
+    email = str()
+    success_url = "/"
+    uid = str()
+
+    def get(self, request, *args, **kwargs):
+        "get the email from the session"
+        self.email = request.session.get('unverified_email')
+        self.uid = request.session.get('uid')
+        return self.render_to_response(self.get_context_data())
+
+    def get_initial(self):
+        initial = super().get_initial()
+        if self.email:
+            initial["email"] = self.email
+        return initial
+
+    def create_email_address(self, user, email, **kwargs):
+        kwargs.setdefault("primary", True)
+        kwargs.setdefault("verified", False)
+        return EmailAddress.objects.add_email(user, email, **kwargs)
+
+    def form_valid(self, form):
+        print()
+        user = DiscordUser.objects.get(uid=self.uid).user
+        email_address = self.create_email_address(user, self.email)
+        if settings.ACCOUNT_EMAIL_CONFIRMATION_REQUIRED and not email_address.verified:
+            self.created_user.is_active = False
+            self.created_user.save()
+        self.create_account(form)
+        self.create_password_history(form, self.created_user)
+        self.after_signup(form)
+        if settings.ACCOUNT_EMAIL_CONFIRMATION_EMAIL and not email_address.verified:
+            self.send_email_confirmation(email_address)
+
+        response_kwargs = {
+            "request": self.request,
+            "template": self.template_name_email_sent,
+            "context": {
+                "email": form.cleaned_data["email"],
+                "success_url": self.get_success_url(),
+            }
+        }
+        return self.response_class(**response_kwargs)
+
+    def post(self, request, *args, **kwargs):
+        if is_authenticated(self.request.user):
+            raise Http404()
+        return super().post(request, *args, **kwargs)
